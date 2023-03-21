@@ -17,8 +17,14 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include "locker.h"
+#include "lst_timer.h"
 #include <sys/uio.h>
 #include <stdarg.h>
+
+class sort_timer_lst;
+class util_timer;
+
+#define TIMESLOT 5      // 定时器周期：秒
 
 // 工作队列的具体工作
 class http_conn {
@@ -28,6 +34,9 @@ public:
     static int m_user_count; // 用户数量
     static const int READ_BUFFER_SIZE = 2048;
     static const int WD_BUF_SIZE = 2048;
+    static sort_timer_lst m_timer_lst;// 定时器链表
+
+    util_timer* timer; 
 
     enum METHOD {GET = 0, POST, HEAD, PUT, DELETE, TRACE, OPTION, CONNECT};
     enum CHECK_STATE {CHECK_STATE_REQUESTLINE = 0,CHECK_STATE_HEADER,CHECK_STATE_CONTENT};
@@ -63,6 +72,7 @@ public:
     bool add_linger();
     bool add_blank_line(); 
     
+    void del_fd();      // 定时器回调函数，被tick()调用
 private:
 
     int m_sockfd; // 该HTTP连接的fd

@@ -2,7 +2,9 @@
 
 int http_conn::m_epollfd = -1;  // 注册到同一个
 int http_conn::m_user_count = 0; // 用户数量
+sort_timer_lst http_conn::m_timer_lst;
 
+const char * doc_clear = "";
 const char * doc_root = "/home/dai/webserver/resource";
 const int FILENAME_LEN = 29;
 
@@ -64,47 +66,39 @@ void http_conn::init(int sockfd,const sockaddr_in & addr) {
 
     init();
 
+    printf("开始初始化计时器\n");
+
+    util_timer* new_timer = new util_timer;
+    new_timer->user_data = this;
+    time_t curr_time = time(NULL);
+    new_timer->expire = curr_time + 3 * TIMESLOT;
+    this->timer = new_timer;
+    m_timer_lst.add_timer(new_timer); 
+
+    printf("初始化ok\n");
+
 }
 
 void http_conn::init() {
-    m_check_state = CHECK_STATE_REQUESTLINE; // 初始化为解析首行
-    m_check_index = 0;
-    m_start_line = 0;
-    m_read_idx = 0;
+  
     m_method = GET;
     m_url = 0;
     m_version = 0;
     m_linger = false;
     m_content_length = 0;
     m_file_address = 0;
+
+    m_check_state = CHECK_STATE_REQUESTLINE; // 初始化为解析首行
+    m_check_index = 0;
+    m_start_line = 0;
+    m_read_idx = 0;
+
     m_write_idx = 0;                // 写缓冲区中待发送的字节数
-    m_iv_count = 0;                 // 被写内存块的数量
     bytes_to_send = 0;              // 将要发送的字节
     bytes_have_send = 0;            // 已经发送的字节
-    /*
-    int m_sockfd; // 该HTTP连接的fd
-    sockaddr_in m_address; // 地址
-    int m_read_idx; // 最后一个字节的下标
-    int m_check_index; // 当前的字符的位置
-    int m_start_line; // 当前解析的行的起始位置
-    char * m_url;
-    char * m_version;
-    METHOD m_method;
-    char * m_host;
-    bool m_linger;
-    int m_content_length;
-    struct stat m_file_state;
-    char * m_file_address;
-    int m_write_idx;                // 写缓冲区中待发送的字节数
-    int m_iv_count;                 // 被写内存块的数量
-    int bytes_to_send;              // 将要发送的字节
-    int bytes_have_send;            // 已经发送的字节
-    */
 
-
-
-    
-
+    bzero(m_write_buf, WD_BUF_SIZE);        // 清空写缓存
+    bzero(m_real_file, FILENAME_LEN);
     bzero(m_read_buf, READ_BUFFER_SIZE);
 }
 
@@ -119,7 +113,11 @@ void http_conn::close_conn() {
 
 // 循环读取客户数据，直到无数据到达或者对方关闭数据
 bool http_conn::read(){
-    
+    if(timer) {             // 更新超时时间
+        time_t curr_time = time( NULL );
+        timer->expire = curr_time + 3 * TIMESLOT;
+        m_timer_lst.adjust_timer( timer );
+    }
     if(m_read_idx >= READ_BUFFER_SIZE) {
         return false;
     }
@@ -290,11 +288,22 @@ http_conn::LINE_STATUS http_conn::parse_line(){
 
 http_conn::HTTP_CODE http_conn::do_request() {
     printf("do_request\n");
+
+    // 清空m_real_file数组
+    for(int i = 0;i <= 100;i ++) {
+        m_real_file[i] = '\0';
+    }
+
     strcpy( m_real_file, doc_root);
     int len = strlen(doc_root);
+
+    printf("real_file:%s\n",m_real_file);
+
     strncpy(m_real_file + len,m_url,strlen(m_url));
+
     printf("m_real_file:%s\n",m_real_file);
     printf("m_url:%s\n",m_url);
+
     if(stat(m_real_file,&m_file_state) < 0) {
         printf("1\n");
         return NO_RESOURCE;
@@ -324,6 +333,12 @@ void http_conn::unmap() {
 }
 
 bool http_conn::write() {
+    if(timer) {             // 更新超时时间
+        time_t curr_time = time( NULL );
+        timer->expire = curr_time + 3 * TIMESLOT;
+        m_timer_lst.adjust_timer( timer );
+    }
+
     if ( bytes_to_send == 0 ) {
         // 将要发送的字节为0，这一次响应结束。
         modfd( m_epollfd, m_sockfd, EPOLLIN ); 
@@ -464,7 +479,10 @@ void http_conn::process() {
 
     // 生成响应
     bool write_ret = process_write(read_ret);
-    if(!write_ret) close_conn();
+    if(!write_ret) {
+        close_conn();
+        if(timer) m_timer_lst.del_timer(timer);  // 移除其对应的定时器
+    }
 
     modfd(m_epollfd,m_sockfd,EPOLLOUT);
 
